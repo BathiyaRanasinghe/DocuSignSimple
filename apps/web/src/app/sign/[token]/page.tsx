@@ -9,7 +9,7 @@ import SignatureCanvas from 'react-signature-canvas';
 import { signApi } from '@/lib/api';
 import type { SigningSession, SignaturePayload } from '@/types';
 
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
+pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 
 interface PlacedSignature {
   pageNumber: number;
@@ -295,6 +295,8 @@ export default function SignPage() {
         <Document
           file={session?.pdfUrl}
           onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+          onLoadError={(err) => setErrorMsg(`Failed to load PDF: ${err.message}`)}
+          loading={<div className="text-gray-500 text-sm py-12">Loading document…</div>}
           className="flex flex-col items-center gap-6"
         >
           {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
