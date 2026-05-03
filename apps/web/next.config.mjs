@@ -3,15 +3,18 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const isDocker = process.env.DOCKER_BUILD === 'true';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
-  // Tell Next.js file tracer the monorepo root so it bundles deps correctly in standalone mode
-  experimental: {
-    outputFileTracingRoot: path.join(__dirname, '../../'),
-  },
+  // standalone + tracing root only needed for Docker; Vercel uses its own output strategy
+  ...(isDocker && {
+    output: 'standalone',
+    experimental: {
+      outputFileTracingRoot: path.join(__dirname, '../../'),
+    },
+  }),
   webpack: (config) => {
-    // Suppress canvas module in Node environment (required by react-pdf)
     config.resolve.alias.canvas = false;
     return config;
   },
