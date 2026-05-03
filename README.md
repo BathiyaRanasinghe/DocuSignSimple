@@ -58,6 +58,10 @@ A lightweight, self-hosted document signing platform. Upload a PDF, add signers,
 | Styling | Tailwind CSS v3 |
 | Containers | Docker multi-stage builds + Docker Compose |
 | Monorepo | npm workspaces |
+| Frontend hosting | Vercel |
+| Backend hosting | Azure Container Apps |
+| Container registry | Azure Container Registry |
+| CI/CD | GitHub Actions |
 
 ---
 
@@ -255,6 +259,165 @@ The API container waits for the health check to pass before the web container st
 - Both containers are built from the **monorepo root** as the Docker context so they share the root `package.json` and `package-lock.json`
 - The web image uses Next.js **standalone output** with `outputFileTracingRoot` pointing to the monorepo root, which ensures `next` itself is bundled into the standalone directory
 - The PDF.js worker (`pdf.worker.min.mjs`) is copied from `node_modules` into `apps/web/public/` during the Docker build and served as a static file
+
+---
+
+## Production Deployment
+
+### Infrastructure overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  User's browser                                          │
+│      │                                                   │
+│      ▼                                                   │
+│  Vercel (Frontend)          Azure Container Apps (API)  │
+│  docu-sign-simple-web  ───► simplesign-api              │
+│  .vercel.app                .australiaeast              │
+│      │                          │                        │
+│      └──── Supabase Auth ───────┘                        │
+│                │                                         │
+│         Supabase (DB + Storage)                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+| Service | URL |
+|---|---|
+| Frontend | https://docu-sign-simple-web.vercel.app |
+| Backend API | https://simplesign-api.purplesmoke-273680ee.australiaeast.azurecontainerapps.io |
+| Health check | https://simplesign-api.purplesmoke-273680ee.australiaeast.azurecontainerapps.io/api/health |
+
+---
+
+### CI/CD — how deploys work
+
+**Backend (Azure)** — triggered on every push to `main`:
+1. GitHub Actions builds the Docker image from the monorepo root
+2. Pushes the image to Azure Container Registry (`simplesignacr.azurecr.io`)
+3. Updates the Container App with the new image and env vars
+
+**Frontend (Vercel)** — triggered automatically by Vercel's GitHub integration on every push to `main`. No GitHub Actions step required.
+
+Workflow file: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+
+---
+
+### Setting up from scratch
+
+#### 1. Supabase
+
+1. Create a project at [supabase.com](https://supabase.com)
+2. Run [`supabase/schema.sql`](supabase/schema.sql) in the SQL Editor
+3. Note your project URL, anon key, and service role key
+
+#### 2. Azure
+
+Install the Azure CLI (`brew install azure-cli`), then:
+
+```bash
+# Log in
+az login
+az extension add --name containerapp --upgrade
+az provider register --namespace Microsoft.App
+az provider register --namespace Microsoft.ContainerRegistry
+
+# Create resources
+az group create --name simplesign-rg --location australiaeast
+
+az acr create \
+  --name simplesignacr \
+  --resource-group simplesign-rg \
+  --sku Basic \
+  --admin-enabled true
+
+az containerapp env create \
+  --name simplesign-env \
+  --resource-group simplesign-rg \
+  --location australiaeast
+
+az containerapp create \
+  --name simplesign-api \
+  --resource-group simplesign-rg \
+  --environment simplesign-env \
+  --image mcr.microsoft.com/azuredocs/containerapps-helloworld:latest \
+  --target-port 4000 \
+  --ingress external \
+  --min-replicas 1 \
+  --max-replicas 3
+
+# Store Supabase credentials as Container App secrets
+az containerapp secret set \
+  --name simplesign-api \
+  --resource-group simplesign-rg \
+  --secrets \
+    supabase-url="https://<ref>.supabase.co" \
+    supabase-anon-key="<anon-key>" \
+    supabase-service-role-key="<service-role-key>"
+```
+
+#### 3. GitHub Secrets
+
+Go to **repo → Settings → Secrets and variables → Actions** and add:
+
+| Secret | How to get it |
+|---|---|
+| `AZURE_CREDENTIALS` | `az ad sp create-for-rbac --name simplesign-github --role contributor --scopes /subscriptions/<id>/resourceGroups/simplesign-rg --sdk-auth` |
+| `ACR_LOGIN_SERVER` | `az acr show --name simplesignacr --query loginServer -o tsv` |
+| `ACR_USERNAME` | `az acr credential show --name simplesignacr --query username -o tsv` |
+| `ACR_PASSWORD` | `az acr credential show --name simplesignacr --query passwords[0].value -o tsv` |
+| `ACR_NAME` | `simplesignacr` |
+| `FRONTEND_URL` | Your Vercel production URL, e.g. `https://your-app.vercel.app` |
+
+#### 4. Vercel
+
+1. Go to [vercel.com](https://vercel.com) → New Project → Import from GitHub
+2. In **Project Settings → General → Root Directory**, set to `apps/web`
+3. Add these environment variables in the Vercel project settings:
+
+| Variable | Value |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://<ref>.supabase.co` |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | your anon key |
+| `NEXT_PUBLIC_API_URL` | your Azure Container App FQDN (e.g. `https://simplesign-api.xxx.australiaeast.azurecontainerapps.io`) |
+
+4. Deploy — Vercel auto-deploys on every push to `main` from this point forward
+
+#### 5. First deploy
+
+Push to `main`. GitHub Actions deploys the API to Azure (~3–5 min). Vercel deploys the frontend automatically.
+
+```bash
+git push origin main
+```
+
+Verify the API is live:
+```bash
+curl https://simplesign-api.purplesmoke-273680ee.australiaeast.azurecontainerapps.io/api/health
+# → {"status":"ok","timestamp":"..."}
+```
+
+---
+
+### Environment variables reference
+
+**Backend — set as Container App env vars via GitHub Actions**
+
+| Variable | Description |
+|---|---|
+| `PORT` | `4000` |
+| `NODE_ENV` | `production` |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_ANON_KEY` | Supabase anon key (JWT validation only) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (DB + storage — never exposed to browser) |
+| `FRONTEND_URL` | Vercel production URL — used for CORS. Accepts comma-separated values and `*.domain` wildcards |
+
+**Frontend — set in Vercel project settings**
+
+| Variable | Description |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (browser-safe) |
+| `NEXT_PUBLIC_API_URL` | Full URL of the Azure Container App API |
 
 ---
 
