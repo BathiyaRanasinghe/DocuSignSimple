@@ -54,17 +54,25 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Link ACR credentials to Container App
+        run: |
+          az containerapp registry set \
+            --name simplesign-api \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --server ${{ env.REGISTRY }} \
+            --username ${{ secrets.ACR_USERNAME }} \
+            --password ${{ secrets.ACR_PASSWORD }}
+
       - name: Deploy API to Container Apps
-        uses: azure/container-apps-deploy-action@v1
-        with:
-          acrName: ${{ secrets.ACR_NAME }}
-          containerAppName: simplesign-api
-          resourceGroup: ${{ env.RESOURCE_GROUP }}
-          imageToDeploy: ${{ env.REGISTRY }}/simplesign-api:${{ github.sha }}
-          environmentVariables: >
-            PORT=4000
-            NODE_ENV=production
-            SUPABASE_URL=secretref:supabase-url
-            SUPABASE_ANON_KEY=secretref:supabase-anon-key
-            SUPABASE_SERVICE_ROLE_KEY=secretref:supabase-service-role-key
-            FRONTEND_URL=${{ secrets.FRONTEND_URL }}
+        run: |
+          az containerapp update \
+            --name simplesign-api \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.REGISTRY }}/simplesign-api:${{ github.sha }} \
+            --replace-env-vars \
+              PORT=4000 \
+              NODE_ENV=production \
+              SUPABASE_URL=secretref:supabase-url \
+              SUPABASE_ANON_KEY=secretref:supabase-anon-key \
+              SUPABASE_SERVICE_ROLE_KEY=secretref:supabase-service-role-key \
+              FRONTEND_URL=${{ secrets.FRONTEND_URL }}
